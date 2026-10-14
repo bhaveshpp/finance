@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#3F51B5">
+  <title>Finance</title>
+  <link rel="stylesheet" href="common.css">
+  <script src="common.js"></script>
+</head>
+<body>
+  <div class="hdr"><div class="hdr-bar"><h1 class="hdr-title">💰 Finance</h1></div></div>
+  <main class="page">
+    <section class="card" style="margin-top:1rem">
+      <h2 style="margin:0 0 .2rem">Login</h2>
+      <form id="form" novalidate>
+        <label class="lbl" for="u">Username</label>
+        <input id="u" class="field" autocomplete="username" autocapitalize="none" required>
+        <label class="lbl" for="p">Password</label>
+        <input id="p" class="field" type="password" autocomplete="current-password" required>
+        <button id="btn" class="btn btn-primary" type="submit">Login</button>
+      </form>
+    </section>
+  </main>
+<script>
+(() => {
+  'use strict';
+  const { $, api, saveSession, loadSession, setBusy, toast, showFlash } = App;
+  if (loadSession()) { location.replace('home.html'); return; }
+  showFlash();
+  $('u').focus();
+  $('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = $('u').value.trim(), password = $('p').value;
+    if (!username || !password) { toast('Enter username and password.', 'error'); return; }
+    setBusy($('btn'), true);
+    try {
+      const d = await api('login', { username, password });
+      saveSession({ username: d.user.username, name: d.user.name, token: d.token, exp: d.expires });
+      App.flash('Welcome ' + d.user.name + '!');
+      location.replace('home.html');
+    } catch (err) {
+      toast(err.code === 'invalid_credentials' ? 'Wrong username or password.' : err.message, 'error');
+      setBusy($('btn'), false);
+    }
+  });
+})();
+</script>
+</body>
+</html>

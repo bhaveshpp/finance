@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#3F51B5">
+  <title>Analysis · Finance</title>
+  <link rel="stylesheet" href="common.css">
+  <script src="common.js"></script>
+  <script src="store.js"></script>
+</head>
+<body>
+  <div id="hdr" class="hdr"></div>
+  <main class="page">
+    <div class="seg" id="mode"></div>
+    <div id="picker"></div>
+    <div id="sync" class="sync" hidden></div>
+    <div class="summary" style="margin-top:.6rem">
+      <div class="sum"><small>Income</small><b id="sInc" class="amt-income">0</b></div>
+      <div class="sum"><small>Expense</small><b id="sExp" class="amt-expense">0</b></div>
+      <div class="sum"><small>Invest</small><b id="sInv" class="amt-invest">0</b></div>
+    </div>
+    <div class="net"><span>Net (Income − Expense)</span><span id="net">0</span></div>
+    <div class="card" style="padding:.8rem .8rem .5rem">
+      <div class="legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--expense)"></i>Expense</span><span><i style="background:var(--invest)"></i>Invest</span></div>
+      <div id="chart"></div>
+    </div>
+    <div class="sec"><span id="tHead">Day-wise</span><span id="tNote" style="font-weight:400;color:var(--muted)"></span></div>
+    <div id="byTime"></div>
+    <div id="cats"></div>
+  </main>
+  <nav id="nav" class="nav"></nav>
+
+<script>
+(() => {
+  'use strict';
+  const A = App;
+  const { $, el, toast, call } = A;
+  if (!A.requireLogin()) return;
+  const S = A.store;
+
+  const now = new Date();
+  let mode = 'month';                                   // month | year | custom
+  let ym = { y: now.getFullYear(), m: now.getMonth() };
+  let year = now.getFullYear();
+  let custom = { from: A.monthBounds(ym.y, ym.m).from, to: A.ymd(now) };
+  let data = null, reqId = 0;
+
+  /* range + grouping for the current selection */
+  function range() {
+    if (mode === 'month') return Object.assign(A.monthBounds(ym.y, ym.m), { group: 'day' });
+    if (mode === 'year') return { from: year + '-01-01', to: year + '-12-31', group: 'month' };
+    const days = A.daysBetween(custom.from, custom.to);
+    return { from: custom.from, to: custom.to, group: days <= 62 ? 'day' : 'month' };
+  }
+
+  /* ------------------------------ pickers ------------------------------ */
+  function drawPicker() {
+    $('mode').replaceChildren(...[['month', 'Month'], ['year', 'Year'], ['custom', 'Custom']].map((m) =>
+      el('button', { type: 'button', class: m[0] === mode ? 'active' : '', text: m[1], onclick: () => { mode = m[0]; drawPicker(); load(false); } })));
+    const box = $('picker'); box.replaceChildren();
+    if (mode === 'month') {
+      const input = el('input', { type: 'month', value: ym.y + '-' + A.pad(ym.m + 1), 'aria-label': 'Select month',
+        onchange: (e) => { const p = e.target.value.split('-').map(Number); if (p.length === 2 && p[0]) { ym = { y: p[0], m: p[1] - 1 }; drawPicker(); load(false); } } });
+      box.append(el('div', { class: 'monthbar' },
+        el('button', { class: 'mb-btn', type: 'button', 'aria-label': 'Previous month', text: '‹', onclick: () => { ym = A.shiftMonth(ym.y, ym.m, -1); drawPicker(); load(false); } }),
+        el('label', { class: 'month-pick' }, el('span', { text: new Date(ym.y, ym.m, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }) }), input),
+        el('button', { class: 'mb-btn', type: 'button', 'aria-label': 'Next month', text: '›', onclick: () => { ym = A.shiftMonth(ym.y, ym.m, 1); drawPicker(); load(false); } })));
+    } else if (mode === 'year') {
+      box.append(el('div', { class: 'monthbar' },
+        el('button', { class: 'mb-btn', type: 'button', 'aria-label': 'Previous year', text: '‹', onclick: () => { year--; drawPicker(); load(false); } }),
+        el('div', { class: 'month-pick', style: 'cursor:default', text: String(year) }),
+        el('button', { class: 'mb-btn', type: 'button', 'aria-label': 'Next year', text: '›', onclick: () => { year++; drawPicker(); load(false); } })));
+    } else {
+      const f = el('input', { type: 'date', class: 'field', value: custom.from, 'aria-label': 'From date' });
+      const t = el('input', { type: 'date', class: 'field', value: custom.to, 'aria-label': 'To date' });
+      const apply = () => {
+        if (!f.value || !t.value) return;
+        if (f.value > t.value) { toast('"From" must be before "To".', 'error'); return; }
+        if (A.daysBetween(f.value, t.value) > 3660) { toast('Range too long (max 10 years).', 'error'); return; }
+        custom = { from: f.value, to: t.value }; load(false);
+      };
+      f.addEventListener('change', apply); t.addEventListener('change', apply);
+      box.append(el('div', { class: 'range-row' }, el('div', {}, el('label', { class: 'lbl', text: 'From' }), f), el('div', {}, el('label', { class: 'lbl', text: 'To' }), t)));
+    }
+  }
+
+  /* ------------------------------ render ------------------------------ */
+  const num = (v) => (v ? A.money(v) : '–');
+  function render() {
+    if (!data) return;
+    const r = data;
+    $('sInc').textContent = A.money(r.totals.income); $('sExp').textContent = A.money(r.totals.expense); $('sInv').textContent = A.money(r.totals.invest);
+    const net = Math.round((r.totals.income - r.totals.expense) * 100) / 100;
+    $('net').textContent = (net > 0 ? '+' : '') + A.money(net); $('net').className = net >= 0 ? 'amt-income' : 'amt-expense';
+
+    $('chart').replaceChildren(A.barChart(r.series, r.group));
+    $('tHead').textContent = r.group === 'day' ? 'Day-wise (days with entries)' : 'Month-wise';
+    $('tNote').textContent = r.group === 'day' ? '' : 'tap a month for its days';
+
+    const list = $('byTime'); list.replaceChildren();
+    const active = r.series.filter((s) => s.income || s.expense || s.invest);
+    if (!active.length) list.append(el('div', { class: 'empty', text: 'No income / expense / investment in this range.' }));
+    else {
+      list.append(el('div', { class: 'tgrid head' }, el('span', { text: r.group === 'day' ? 'Date' : 'Month' }), el('span', { text: 'Income' }), el('span', { text: 'Expense' }), el('span', { text: 'Invest' })));
+      (r.group === 'day' ? active : r.series).forEach((s) => {
+        const cell = (v, cls) => el('span', { class: v ? cls : 'z', text: num(v) });
+        const attrs = { class: 'row tgrid', type: 'button' };
+        if (r.group === 'month') attrs.onclick = () => { const p = s.key.split('-').map(Number); mode = 'month'; ym = { y: p[0], m: p[1] - 1 }; drawPicker(); load(false); };
+        const first = el('span', { text: r.group === 'day' ? A.shortDay(s.key) : A.monthName(s.key) });
+        list.append(el(r.group === 'month' ? 'button' : 'div', attrs, first, cell(s.income, 'amt-income'), cell(s.expense, 'amt-expense'), cell(s.invest, 'amt-invest')));
+      });
+    }
+
+    // category-wise (budget is monthly: ×1 in Month mode, ×12 in Year mode, hidden for Custom)
+    const factor = mode === 'month' ? 1 : mode === 'year' ? 12 : 0;
+    const cats = $('cats'); cats.replaceChildren();
+    [['Expense', 'expense', 'var(--expense)'], ['Income', 'income', 'var(--income)'], ['Investment', 'invest', 'var(--invest)']].forEach((t) => {
+      const items = r.categories[t[0]] || [], total = r.totals[t[1]];
+      cats.append(el('div', { class: 'sec' }, el('span', { text: t[0] + ' by category' }), el('span', { class: 'amt-' + (t[1]), text: A.money(total) })));
+      if (!items.length) { cats.append(el('div', { class: 'empty', style: 'padding:.6rem', text: 'No data' })); return; }
+      items.forEach((c) => {
+        const pct = total > 0 ? Math.round((c.total / total) * 100) : 0;
+        const budget = t[0] === 'Expense' && factor && c.budget ? c.budget * factor : 0;
+        const over = budget && c.total > budget;
+        cats.append(el('div', { class: 'row', style: 'cursor:default' },
+          el('div', { class: 'ico', text: c.icon }),
+          el('div', { class: 'row-main' },
+            el('div', { class: 'row-title', text: c.name }),
+            el('div', { class: 'row-sub', text: budget ? 'Budget ₹ ' + A.money(budget) + (over ? ' · over by ' + A.money(c.total - budget) : '') : pct + '% of ' + t[0].toLowerCase() }),
+            el('div', { class: 'bar' }, el('i', { style: 'width:' + Math.min(100, budget ? Math.round((c.total / budget) * 100) : pct) + '%;background:' + (over ? 'var(--expense)' : t[2]) }))),
+          el('div', { class: 'row-amt', text: A.money(c.total) })));
+      });
+    });
+  }
+
+  /* ------------------------------ load ------------------------------ */
+  function setSync() {
+    const n = S.pendingCount();
+    $('sync').hidden = !n; $('sync').textContent = n ? '⏳ ' + n + ' change' + (n > 1 ? 's' : '') + ' still saving — totals update when done' : '';
+  }
+  async function load(force) {
+    const my = ++reqId, r = range(), key = r.from + '|' + r.to + '|' + r.group;
+    const cached = S.getAnalysis(key);
+    if (cached) { data = cached.data; render(); }
+    else { data = null; $('byTime').replaceChildren(el('div', { class: 'loading', text: 'Loading…' })); $('cats').replaceChildren(); $('chart').replaceChildren(); }
+    if (!force && cached && Date.now() - cached.ts < S.TTL) return;
+    try {
+      await S.whenIdle(6000);                           // let unsynced changes reach the sheet first
+      const d = await call('get_analysis', r);
+      if (my !== reqId) return;
+      S.setAnalysis(key, d); data = d; render();
+    } catch (err) {
+      if (my !== reqId) return;
+      if (!cached) $('byTime').replaceChildren(el('div', { class: 'empty', text: err.message }));
+      else if (force) toast(err.message, 'error');
+    }
+  }
+  // a local change happened (or finished syncing) → this page's numbers may be stale
+  window.addEventListener('finance:change', () => { setSync(); if (S.pendingCount() === 0) load(false); });
+
+  A.mountHeader('📊 Analysis', async () => { await S.resume(); await load(true); toast('Refreshed'); });
+  A.mountNav('analysis');
+  drawPicker(); setSync(); load(false); S.resume();
+})();
+</script>
+</body>
+</html>

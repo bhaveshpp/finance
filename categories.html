@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#3F51B5">
+  <title>Categories · Finance</title>
+  <link rel="stylesheet" href="common.css">
+  <script src="common.js"></script>
+  <script src="store.js"></script>
+</head>
+<body>
+  <div id="hdr" class="hdr"></div>
+  <main class="page">
+    <div class="seg" id="seg"></div>
+    <div class="toolbar"><h2 id="h">Categories</h2><button id="add" class="btn btn-sm" type="button">+ Add</button></div>
+    <div id="list"></div>
+  </main>
+  <nav id="nav" class="nav"></nav>
+
+<script>
+(() => {
+  'use strict';
+  const A = App;
+  const { $, el, toast, call } = A;
+  if (!A.requireLogin()) return;
+
+  const CAT_TYPES = ['Expense', 'Income', 'Investment'];
+  let tab = 'Expense';
+  const S = A.store;
+  let masters = S.masters();
+
+  function render() {
+    const seg = $('seg'); seg.replaceChildren(...CAT_TYPES.map((t) =>
+      el('button', { type: 'button', class: 't-' + t + (t === tab ? ' active' : ''), text: t, onclick: () => { tab = t; render(); } })));
+    $('h').textContent = tab + ' categories';
+    const list = $('list'); list.replaceChildren();
+    const items = masters.categories.filter((c) => c.type === tab);
+    if (!items.length) list.append(el('div', { class: 'empty', text: 'No ' + tab.toLowerCase() + ' categories yet. Tap + Add.' }));
+    items.forEach((c) => list.append(el('button', { class: 'row', type: 'button', onclick: () => openForm(c) },
+      el('div', { class: 'ico', text: c.icon }),
+      el('div', { class: 'row-main' }, el('div', { class: 'row-title', text: c.name }),
+        c.note ? el('div', { class: 'row-sub', text: c.note.split('\n')[0] }) : null),
+      c.budget ? el('div', { class: 'row-side' }, el('small', { text: 'Budget' }), el('div', { class: 'row-amt', text: '₹ ' + A.money(c.budget) })) : null)));
+  }
+
+  function openForm(cat) {
+    const type = el('select', { id: 'cType', class: 'field' }, ...CAT_TYPES.map((t) => el('option', { value: t, text: t })));
+    const name = el('input', { id: 'cName', class: 'field', maxlength: '40', placeholder: 'e.g. Food', autocomplete: 'off' });
+    const icon = el('input', { id: 'cIcon', class: 'field', maxlength: '8', placeholder: '🍔' });
+    const budget = el('input', { id: 'cBudget', class: 'field', type: 'text', inputmode: 'decimal', placeholder: '0' });
+    const note = el('textarea', { id: 'cNote', class: 'field', maxlength: '500', placeholder: 'Details (e.g. SIP folio, fund name, monthly target…)' });
+    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: cat ? 'Update' : 'Add category' });
+    type.value = cat ? cat.type : tab;
+    if (cat) { type.disabled = true; name.value = cat.name; icon.value = cat.icon; budget.value = cat.budget ? String(cat.budget) : ''; note.value = cat.note; }
+    const form = el('form', { novalidate: true },
+      el('label', { class: 'lbl', for: 'cType', text: 'Type' }), type,
+      el('label', { class: 'lbl', for: 'cName', text: 'Name' }), name,
+      el('div', { class: 'two' },
+        el('div', {}, el('label', { class: 'lbl', for: 'cIcon', text: 'Icon (emoji)' }), icon),
+        el('div', {}, el('label', { class: 'lbl', for: 'cBudget', text: 'Budget (monthly)' }), budget)),
+      el('label', { class: 'lbl', for: 'cNote', text: 'Note' }), note, save);
+    let close;
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!name.value.trim()) { toast('Enter category name.', 'error'); return; }
+      const b = budget.value.trim() === '' ? 0 : Number(budget.value.replace(/,/g, ''));
+      if (!isFinite(b) || b < 0) { toast('Budget must be a number.', 'error'); return; }
+      A.setBusy(save, true);
+      try {
+        A.storeMasters(await call('save_category', { id: cat ? cat.id : '', type: type.value, name: name.value.trim(), icon: icon.value.trim(), budget: b, note: note.value.trim() }));
+        masters = S.masters(); S.invalidateAnalysis(); tab = type.value; close(); toast('Saved'); render();
+      } catch (err) { toast(err.message, 'error'); A.setBusy(save, false); }
+    });
+    close = A.openSheet(cat ? 'Edit category' : 'New category', form);
+    name.focus();
+  }
+  $('add').addEventListener('click', () => openForm(null));
+
+  async function refresh(quiet) {
+    try { await S.resume(); masters = await S.refreshMasters(); render(); if (!quiet) toast('Refreshed'); }
+    catch (err) { if (!quiet) toast(err.message, 'error'); }
+  }
+  A.mountHeader('🏷️ Categories', () => refresh(false));
+  A.mountNav('categories');
+  render(); S.resume();
+  if (!S.mastersFresh()) refresh(true);
+})();
+</script>
+</body>
+</html>

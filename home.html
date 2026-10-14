@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#3F51B5">
+  <title>Finance</title>
+  <link rel="stylesheet" href="common.css">
+  <script src="common.js"></script>
+  <script src="store.js"></script>
+</head>
+<body>
+  <div id="hdr" class="hdr"></div>
+  <main class="page">
+    <div class="monthbar">
+      <button id="prev" class="mb-btn" type="button" aria-label="Previous month">‹</button>
+      <label class="month-pick"><span id="monthLabel"></span><input id="monthInput" type="month" aria-label="Select month"></label>
+      <button id="next" class="mb-btn" type="button" aria-label="Next month">›</button>
+    </div>
+    <div class="summary">
+      <div class="sum"><small>Income</small><b id="sInc" class="amt-income">0</b></div>
+      <div class="sum"><small>Expense</small><b id="sExp" class="amt-expense">0</b></div>
+      <div class="sum"><small>Invest</small><b id="sInv" class="amt-invest">0</b></div>
+    </div>
+    <div id="list"></div>
+  </main>
+  <button id="fab" class="fab" type="button" aria-label="Add transaction">+</button>
+  <nav id="nav" class="nav"></nav>
+
+<script>
+(() => {
+  'use strict';
+  const A = App;
+  const { $, el, toast } = A;
+  if (!A.requireLogin()) return;
+  const S = A.store;
+
+  const TABS = {
+    Income:     { fromLbl: 'From (Category)', from: 'cat', toLbl: 'To (Account)',  to: 'acc' },
+    Expense:    { fromLbl: 'From (Account)',  from: 'acc', toLbl: 'To (Category)', to: 'cat' },
+    Investment: { fromLbl: 'From (Account)',  from: 'acc', toLbl: 'To (Category)', to: 'cat' },
+    Transfer:   { fromLbl: 'From (Account)',  from: 'acc', toLbl: 'To (Account)',  to: 'acc' }
+  };
+  const LAST_ACC_KEY = 'finance_last_account';
+
+  const now = new Date();
+  let ym = { y: now.getFullYear(), m: now.getMonth() };
+  let txns = [];
+  let masters = S.masters();
+  let reqId = 0;
+
+  /* ----------------------------- list ----------------------------- */
+  function iconFor(t) {
+    if (t.type === 'Transfer') { const a = masters.accounts.find((x) => x.name === t.account); return a ? a.icon : '🔁'; }
+    const c = masters.categories.find((x) => x.name === t.category && x.type === t.type);
+    return c ? c.icon : '🏷️';
+  }
+  function row(t) {
+    const av = A.amountView(t), st = S.statusOf(t.id);
+    const title = t.note ? t.note.split('\n')[0] : (t.type === 'Transfer' ? 'Transfer' : t.category);
+    const sub = t.type === 'Transfer' ? t.account + ' → ' + t.to_account : t.category + ' · ' + t.account;
+    const side = st === 'failed' ? el('small', { class: 'st', text: '⚠ Not saved' })
+               : st === 'queued' ? el('small', { text: '⏳ Saving…' })
+               : el('small', { text: A.timeLabel(t.time) });
+    return el('button', { class: 'row' + (st === 'failed' ? ' failed' : ''), type: 'button', onclick: () => openTxn(t) },
+      el('div', { class: 'ico', text: iconFor(t) }),
+      el('div', { class: 'row-main' }, el('div', { class: 'row-title', text: title }), el('div', { class: 'row-sub', text: sub })),
+      el('div', { class: 'row-side' }, el('div', { class: 'row-amt ' + av.cls, text: av.text }), side));
+  }
+  function render() {
+    $('monthLabel').textContent = new Date(ym.y, ym.m, 1).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+    $('monthInput').value = ym.y + '-' + A.pad(ym.m + 1);
+    const s = A.totals(txns);
+    $('sInc').textContent = A.money(s.Income); $('sExp').textContent = A.money(s.Expense); $('sInv').textContent = A.money(s.Investment);
+    const box = $('list'); box.replaceChildren();
+    if (!txns.length) { box.append(el('div', { class: 'empty', text: 'No transactions in this month. Tap + to add.' })); return; }
+    A.groupByDate(txns).forEach((g) => {
+      box.append(el('div', { class: 'day', text: A.dayLabel(g.date) }));
+      g.items.forEach((t) => box.append(row(t)));
+    });
+  }
+
+  /** cached month first (instant) → silent fetch only when missing / older than 5 min (or forced) */
+  async function load(force) {
+    const my = ++reqId;
+    const entry = S.cacheEntry(ym.y, ym.m);
+    if (entry) { txns = entry.items; render(); }
+    else { txns = []; $('list').replaceChildren(el('div', { class: 'loading', text: 'Loading…' })); }
+    if (!force && S.isFresh(entry)) return;
+    try {
+      const r = await S.loadMonth(ym.y, ym.m, { force: true });
+      if (my !== reqId) return;
+      txns = r.items; render();
+    } catch (err) {
+      if (my !== reqId) return;
+      if (!entry) $('list').replaceChildren(el('div', { class: 'empty', text: err.message }));
+      else if (force) toast(err.message, 'error');
+    }
+  }
+  function go(delta) { ym = A.shiftMonth(ym.y, ym.m, delta); load(false); }
+  $('prev').addEventListener('click', () => go(-1));
+  $('next').addEventListener('click', () => go(1));
+  $('monthInput').addEventListener('change', (e) => {
+    const p = e.target.value.split('-').map(Number);
+    if (p.length === 2 && p[0]) { ym = { y: p[0], m: p[1] - 1 }; load(false); }
+  });
+
+  // any local change (add / edit / delete / sync finished) → redraw from the cache, no API call
+  window.addEventListener('finance:change', () => {
+    masters = S.masters();
+    const e = S.cacheEntry(ym.y, ym.m);
+    if (e) { txns = e.items; render(); }
+  });
+
+  /* ------------------------ add / edit popup ------------------------ */
+  function optionsFor(kind, type) {
+    if (kind === 'acc') return masters.accounts.map((a) => ({ v: a.name, t: a.icon + ' ' + a.name }));
+    return masters.categories.filter((c) => c.type === type).map((c) => ({ v: c.name, t: c.icon + ' ' + c.name }));
+  }
+  function fillSelect(sel, opts, keep) {
+    sel.replaceChildren(...opts.map((o) => el('option', { value: o.v, text: o.t })));
+    if (keep && opts.some((o) => o.v === keep)) sel.value = keep;
+  }
+
+  function openTxn(edit) {
+    if (edit && !edit.id) { toast('This row has no ID. Run fillMissingIds in the script.', 'error'); return; }
+    masters = S.masters();
+    if (!masters.accounts.length) { toast('Loading accounts… try again in a moment.', 'error'); return; }
+    let type = edit ? edit.type : 'Expense';
+
+    const tabs = el('div', { class: 'seg' });
+    const lblFrom = el('label', { class: 'lbl', for: 'fFrom' });
+    const lblTo = el('label', { class: 'lbl', for: 'fTo' });
+    const selFrom = el('select', { id: 'fFrom', class: 'field' });
+    const selTo = el('select', { id: 'fTo', class: 'field' });
+    const amount = el('input', { id: 'fAmt', class: 'field amount', type: 'text', inputmode: 'decimal', placeholder: '0', autocomplete: 'off' });
+    const when = el('input', { id: 'fTime', class: 'field', type: 'datetime-local' });
+    const note = el('textarea', { id: 'fNote', class: 'field', maxlength: '300', placeholder: 'Note (optional)' });
+    const save = el('button', { class: 'btn btn-primary', type: 'submit', text: edit ? 'Update' : 'Save' });
+
+    amount.value = edit ? String(edit.amount) : '';
+    when.value = edit ? edit.time : A.nowLocalInput();
+    note.value = edit ? edit.note : '';
+
+    function currentFromTo() {
+      const v = { account: '', category: '', to_account: '' };
+      if (type === 'Income') { v.category = selFrom.value; v.account = selTo.value; }
+      else if (type === 'Transfer') { v.account = selFrom.value; v.to_account = selTo.value; }
+      else { v.account = selFrom.value; v.category = selTo.value; }
+      return v;
+    }
+    function applyTab(pick) {
+      const cfg = TABS[type];
+      [...tabs.children].forEach((b) => b.classList.toggle('active', b.dataset.t === type));
+      lblFrom.textContent = cfg.fromLbl; lblTo.textContent = cfg.toLbl;
+      pick = pick || {};
+      const acc = pick.account || localStorage.getItem(LAST_ACC_KEY) || '';
+      fillSelect(selFrom, optionsFor(cfg.from, type), cfg.from === 'acc' ? acc : pick.category);
+      fillSelect(selTo, optionsFor(cfg.to, type), cfg.to === 'acc' ? (type === 'Transfer' ? pick.to_account : acc) : pick.category);
+      if (type === 'Transfer' && selTo.value === selFrom.value && selTo.options.length > 1) {
+        selTo.selectedIndex = selFrom.selectedIndex === 0 ? 1 : 0;
+      }
+    }
+    A.TYPES.forEach((tp) => tabs.append(el('button', { class: 't-' + tp, type: 'button', 'data-t': tp, text: tp === 'Investment' ? 'Invest' : tp,
+      onclick: () => { const keep = currentFromTo(); type = tp; applyTab({ account: keep.account, to_account: keep.to_account }); } })));
+    applyTab(edit ? { account: edit.account, to_account: edit.to_account, category: edit.category } : null);
+
+    const form = el('form', { novalidate: true });
+    const failed = edit && S.statusOf(edit.id) === 'failed';
+    let close;
+    if (failed) {
+      form.append(el('div', { class: 'errbar' }, 'Not saved: ' + S.errorOf(edit.id) + ' ',
+        el('button', { class: 'btn btn-sm', type: 'button', text: 'Retry', onclick: () => { S.retry(edit.id); close(); } })));
+    }
+    form.append(tabs,
+      el('label', { class: 'lbl', for: 'fAmt', text: 'Amount' }), amount,
+      el('label', { class: 'lbl', for: 'fTime', text: 'Date & time' }), when,
+      lblFrom, selFrom, lblTo, selTo,
+      el('label', { class: 'lbl', for: 'fNote', text: 'Note' }), note,
+      save);
+    if (edit) {
+      form.append(el('button', { class: 'btn btn-danger', type: 'button', text: 'Delete', onclick: () => {
+        if (!confirm('Delete this transaction?')) return;
+        S.deleteTxn(edit); close(); toast('Deleted');
+      } }));
+    }
+
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const amt = Number(String(amount.value).replace(/,/g, ''));
+      if (!isFinite(amt) || amt <= 0) { toast('Enter a valid amount.', 'error'); amount.focus(); return; }
+      if (!when.value) { toast('Choose date and time.', 'error'); return; }
+      if (!selFrom.value || !selTo.value) { toast('Choose ' + (TABS[type].from === 'cat' || TABS[type].to === 'cat' ? 'a category (add one in the Categories page)' : 'accounts') + '.', 'error'); return; }
+      const f = currentFromTo();
+      if (type === 'Transfer' && f.account === f.to_account) { toast('From and To accounts must be different.', 'error'); return; }
+      const fields = { type, amount: amt, time: when.value, note: note.value.trim(), account: f.account, category: f.category, to_account: f.to_account };
+      try { localStorage.setItem(LAST_ACC_KEY, f.account); } catch (_) {}
+      if (edit) S.editTxn(edit, fields); else S.addTxn(fields);
+      close(); toast(edit ? 'Updated' : 'Saved');
+      // the new/edited entry may belong to another month than the one on screen → follow it
+      const k = fields.time.slice(0, 7), cur = ym.y + '-' + A.pad(ym.m + 1);
+      if (k !== cur) { const p = k.split('-').map(Number); ym = { y: p[0], m: p[1] - 1 }; load(false); }
+    });
+
+    close = A.openSheet(edit ? 'Edit transaction' : 'New transaction', form);
+    if (!edit) amount.focus();
+  }
+  $('fab').addEventListener('click', () => openTxn(null));
+
+  /* ------------------------------ init ------------------------------ */
+  async function refreshAll() {
+    try { await S.resume(); await Promise.all([S.refreshMasters(), load(true)]); toast('Refreshed'); }
+    catch (err) { toast(err.message, 'error'); }
+  }
+  A.mountHeader('💰 Finance', refreshAll);
+  A.mountNav('home');
+  render(); load(false);
+  S.resume();
+  if (!S.mastersFresh()) S.refreshMasters().catch(() => {});
+})();
+</script>
+</body>
+</html>
